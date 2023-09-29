@@ -5,6 +5,7 @@ import (
 	"net"
 	"bytes"
 
+	"math/rand"
 	"encoding/binary"
 
 	"libsvm-go"
@@ -65,19 +66,8 @@ func (f OSFFrame) TrainingSlice() []float64 {
 	i := 0
 	s := make([]float64, 446)
 
-	s[i] = float64(f.Now); i++
-
-	s[i] = float64(f.Id); i++
-
-	s[i] = float64(f.Width); i++
-	s[i] = float64(f.Height); i++
-
 	s[i] = float64(f.EyeBlinkRight); i++
 	s[i] = float64(f.EyeBlinkLeft); i++
-
-	s[i] = float64(f.Success); i++
-	
-	s[i] = float64(f.PNPError); i++
 
 	for _, v := range f.Quaternion {
 		s[i] = float64(v); i++
@@ -87,20 +77,6 @@ func (f OSFFrame) TrainingSlice() []float64 {
 	}
 	for _, v := range f.Translation {
 		s[i] = float64(v); i++
-	}
-
-	for _, v := range f.LMSConfidence {
-		s[i] = float64(v); i++
-	}
-	for _, v := range f.LMS {
-		s[i] = float64(v[0]); i++
-		s[i] = float64(v[1]); i++
-	}
-
-	for _, v := range f.PNPPoints {
-		s[i] = float64(v[0]); i++
-		s[i] = float64(v[1]); i++
-		s[i] = float64(v[2]); i++
 	}
 
 	s[i] = float64(f.EyeLeft); i++
@@ -152,7 +128,7 @@ func TrainExpressionsModel(attributes []libSvm.Attributes) (*libSvm.Model, error
 func BuildAttributeList(class float64, frames []OSFFrame) []libSvm.Attributes {
 	attributes := make([]libSvm.Attributes, 0, len(frames))
 	for _, frame := range frames {
-		slice := frame.Slice()
+		slice := frame.TrainingSlice()
 
 		attr := libSvm.Attributes{
 			Class : class,
@@ -179,8 +155,6 @@ func main() {
 	class := float64(1.0)
 	attributes := make([]libSvm.Attributes, 0, 1000)
 
-	(&OSFFrame{}).Slice()
-
 	uri := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.ListenPacket("udp", uri)
 	if err != nil {
@@ -200,17 +174,23 @@ func main() {
 			frame, _ := OSFParseFrame(buf)
 			frames = append(frames, *frame)
 
-			if (len(frames) > 100) {
+			fmt.Printf("Sample Number: %d\n", len(frames))
+
+			if (len(frames) >= 300) {
 				fmt.Printf("change!\n")
 				break
 			}
 		}
 
-		fmt.Printf("Total Samples: %d\n", len(attributes))
 		attributes = append(attributes, BuildAttributeList(class, frames)...)
 		class += 1.0
 	}
 
+	for i := range attributes {
+		j := rand.Intn(i + 1)
+		attributes[i], attributes[j] = attributes[j], attributes[i]
+	}
+	
 	model, _ := TrainExpressionsModel(attributes)
 
 	for true {
@@ -220,13 +200,18 @@ func main() {
 		}
 		
 		frame, _ := OSFParseFrame(buf)
-		slice := (*frame).Slice()
+		slice := (*frame).TrainingSlice()
 		x := make(map[int]float64, len(slice))
 		for i, v := range slice {
-			x[i] = v
+			x[i+1] = v
 		}
 
-		fmt.Printf("Label: %f\n", model.Predict(x))
+		attributes := make(map[int]string, 3)
+		attributes[1] = "Neutral"
+		attributes[2] = "Smiling"
+		attributes[3] = "Pog"
+		
+		fmt.Printf("Label: %s\n", attributes[int(model.Predict(x))])
 	}
 
 
