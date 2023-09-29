@@ -2,14 +2,17 @@ package main
 
 import (
 	"fmt"
-	"math"
+	"net"
+	"bytes"
 
 	"encoding/binary"
+
+	"libsvm-go"
 )
 
-const OSF_FRAME_SIZE int	= 1785
-
-type OSFRawFrame			[OSF_FRAME_SIZE]byte
+const OSF_FRAME_SIZE		int 	= 1785
+const OSF_DEFAULT_HOST 		string 	= "127.0.0.1"
+const OSF_DEFAULT_PORT 		int 	= 11573
 
 type Vector2 [2]float32
 type Vector3 [3]float32
@@ -58,82 +61,174 @@ type OSFFrame struct {
 	MouthWide				float32
 }
 
-func float64FromBytes(b []byte) float64 {
-	return math.Float64frombits(binary.LittleEndian.Uint64(b))
-}
-func float32FromBytes(b []byte) float32 {
-	return math.Float32frombits(binary.LittleEndian.Uint32(b))
-}
-func int32FromBytes(b []byte) int32 {
-	var v int32 = 0
+func (f OSFFrame) TrainingSlice() []float64 {
+	i := 0
+	s := make([]float64, 446)
 
-	v |= int32(b[0])
-	v |= int32(b[1]) << 8
-	v |= int32(b[2]) << 16
-	v |= int32(b[3]) << 24
+	s[i] = float64(f.Now); i++
 
-	return v
+	s[i] = float64(f.Id); i++
+
+	s[i] = float64(f.Width); i++
+	s[i] = float64(f.Height); i++
+
+	s[i] = float64(f.EyeBlinkRight); i++
+	s[i] = float64(f.EyeBlinkLeft); i++
+
+	s[i] = float64(f.Success); i++
+	
+	s[i] = float64(f.PNPError); i++
+
+	for _, v := range f.Quaternion {
+		s[i] = float64(v); i++
+	}
+	for _, v := range f.Euler {
+		s[i] = float64(v); i++
+	}
+	for _, v := range f.Translation {
+		s[i] = float64(v); i++
+	}
+
+	for _, v := range f.LMSConfidence {
+		s[i] = float64(v); i++
+	}
+	for _, v := range f.LMS {
+		s[i] = float64(v[0]); i++
+		s[i] = float64(v[1]); i++
+	}
+
+	for _, v := range f.PNPPoints {
+		s[i] = float64(v[0]); i++
+		s[i] = float64(v[1]); i++
+		s[i] = float64(v[2]); i++
+	}
+
+	s[i] = float64(f.EyeLeft); i++
+	s[i] = float64(f.EyeRight); i++
+	s[i] = float64(f.EyeSteepnessLeft); i++
+	s[i] = float64(f.EveUpDownLeft); i++
+	s[i] = float64(f.EyeQuirkLeft); i++
+	s[i] = float64(f.EyeSteepnessRight); i++
+	s[i] = float64(f.EveUpDownRight); i++
+	s[i] = float64(f.EyeQuirkRight); i++
+	s[i] = float64(f.MouthCornerUpDownLeft); i++
+	s[i] = float64(f.MouthCornerInOutLeft); i++
+	s[i] = float64(f.MouthCornerUpDownRight); i++
+	s[i] = float64(f.MouthCornerInOutRight); i++
+	s[i] = float64(f.MouthOpen); i++
+	s[i] = float64(f.MouthWide); i++
+
+	return s
 }
 
-func OSFParseFrame(raw *OSFRawFrame) (*OSFFrame, error) {
-	var i int32 = 0
-	var e int32 = 0
-	var s int32 = 0
+func OSFParseFrame(raw []byte) (*OSFFrame, error) {
 	var err error = nil
 	frame := &OSFFrame{}
+	buf := bytes.NewBuffer(make([]byte, 0, OSF_FRAME_SIZE))
 
-	fetchByte := func() byte {
-		v := raw[i]; i++
-		return v
-	}
-	fetchInt32 := func() int32 {
-		v := int32FromBytes(raw[i:i+3]); i+=4
-		return v
-	}
-	fetchFloat32 := func() float32 {
-		v := float32FromBytes(raw[i:i+3]); i+=4
-		return v
-	}
-	fetchFloat64 := func() float64 {
-		v := float64FromBytes(raw[i:i+7]); i+=8
-		return v
+	if err = binary.Write(buf, binary.LittleEndian, raw); err != nil {
+		return nil, err
 	}
 
-	frame.Now = fetchFloat64()
-
-	frame.Id = fetchInt32()
-	
-	frame.Width = fetchFloat32()
-	frame.Height = fetchFloat32()
-
-	frame.EyeBlinkRight = fetchFloat32()
-	frame.EyeBlinkLeft = fetchFloat32()
-
-	frame.Success = fetchByte()
-
-	frame.PNPError = fetchFloat32()
-
-	s = 0
-	e = i+(4*4)
-	for ; i < e; s++ {
-		frame.Quaternion[s] = fetchFloat32()
+	if err = binary.Read(buf, binary.LittleEndian, frame); err != nil {
+		return nil, err
 	}
 
-	s = 0
-	e = i+(4*3)
-	for ; i < e; s++ {
-		frame.Euler[s] = fetchFloat32()
+	return frame, err
+}
+
+func TrainExpressionsModel(attributes []libSvm.Attributes) (*libSvm.Model, error) {
+	param := libSvm.NewParameter()
+	param.KernelType = libSvm.POLY
+	model := libSvm.NewModel(param)
+
+	problem, err := libSvm.NewProblemFromAttributes(attributes, param) 
+		
+	model.Train(problem)
+
+	return model, err
+}
+
+func BuildAttributeList(class float64, frames []OSFFrame) []libSvm.Attributes {
+	attributes := make([]libSvm.Attributes, 0, len(frames))
+	for _, frame := range frames {
+		slice := frame.Slice()
+
+		attr := libSvm.Attributes{
+			Class : class,
+			Snodes : make([]libSvm.Snode, 0, len(slice)),
+		}
+
+		for i, v := range slice {
+			attr.Snodes = append(attr.Snodes, libSvm.Snode{
+				Index: i + 1,
+				Value: v,
+			})
+		}
+		
+		attributes = append(attributes, attr)
 	}
 
-	s = 0
-	e = i+(4*3)
-	for ; i < e; s++ {
-		frame.Translation[s] = fetchFloat32()
-	}
-
-	return nil, err
+	return attributes
 }
 
 func main() {
-	fmt.Print("Hello World\n")
+	buf := make([]byte, OSF_FRAME_SIZE)
+	host := OSF_DEFAULT_HOST
+	port := OSF_DEFAULT_PORT
+	class := float64(1.0)
+	attributes := make([]libSvm.Attributes, 0, 1000)
+
+	(&OSFFrame{}).Slice()
+
+	uri := fmt.Sprintf("%s:%d", host, port)
+	conn, err := net.ListenPacket("udp", uri)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+
+	fmt.Printf("waiting for OpenSeeFace\n")
+	for class < 4.0 {
+		frames := make([]OSFFrame, 0, 1000)
+		for true {
+			_, _, err := conn.ReadFrom(buf)
+			if err != nil {
+				panic(err)
+			}
+			
+			frame, _ := OSFParseFrame(buf)
+			frames = append(frames, *frame)
+
+			if (len(frames) > 100) {
+				fmt.Printf("change!\n")
+				break
+			}
+		}
+
+		fmt.Printf("Total Samples: %d\n", len(attributes))
+		attributes = append(attributes, BuildAttributeList(class, frames)...)
+		class += 1.0
+	}
+
+	model, _ := TrainExpressionsModel(attributes)
+
+	for true {
+		_, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			panic(err)
+		}
+		
+		frame, _ := OSFParseFrame(buf)
+		slice := (*frame).Slice()
+		x := make(map[int]float64, len(slice))
+		for i, v := range slice {
+			x[i] = v
+		}
+
+		fmt.Printf("Label: %f\n", model.Predict(x))
+	}
+
+
+	libSvm.NewParameter()
 }
