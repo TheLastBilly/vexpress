@@ -7,8 +7,8 @@ import (
 
 	"math/rand"
 	"encoding/binary"
-
-	"libsvm-go"
+	
+	"github.com/TheLastBilly/libsvm-go"
 )
 
 const OSF_FRAME_SIZE		int 	= 1785
@@ -190,7 +190,7 @@ func main() {
 		j := rand.Intn(i + 1)
 		attributes[i], attributes[j] = attributes[j], attributes[i]
 	}
-	
+
 	model, _ := TrainExpressionsModel(attributes)
 
 	for true {
